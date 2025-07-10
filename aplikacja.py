@@ -1,16 +1,65 @@
 import streamlit as st
 import pandas as pd
-import os
+from streamlit_gsheets import GSheetsConnection
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
 
-# --- Konfiguracja, Kolory, CSS, Funkcje (bez zmian) ---
+# --- Konfiguracja Aplikacji ---
 st.set_page_config(
     page_title="Nawyki Zespołowe",
     page_icon="✨",
     layout="wide"
 )
+
+# --- Połączenie z Bazą Danych (Google Sheets) ---
+# Używamy wbudowanych sekretów Streamlit do bezpiecznego połączenia
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# --- Funkcje do Danych (nowa wersja) ---
+def load_data():
+    try:
+        zespol_df = conn.read(worksheet="Zespol", usecols=[0, 1], ttl=5)
+        nawyki_df = conn.read(worksheet="Nawyki", usecols=[0, 1], ttl=5)
+        wpisy_df = conn.read(worksheet="Wpisy", usecols=[0, 1, 2, 3], ttl=5)
+        
+        # Usuwamy puste wiersze, które mogą pojawić się w Google Sheets
+        zespol_df.dropna(how="all", inplace=True)
+        nawyki_df.dropna(how="all", inplace=True)
+        wpisy_df.dropna(how="all", inplace=True)
+
+    except Exception as e:
+        st.error(f"Błąd wczytywania danych z Google Sheets: {e}")
+        # Tworzymy puste ramki danych w razie błędu, aby aplikacja się nie zawiesiła
+        zespol_df = pd.DataFrame(columns=['ID_Osoby', 'Imie'])
+        nawyki_df = pd.DataFrame(columns=['ID_Nawyku', 'Opis'])
+        wpisy_df = pd.DataFrame(columns=['Data', 'ID_Osoby', 'ID_Nawyku', 'Odpowiedz'])
+
+    # Konwersja typów danych
+    zespol_df['ID_Osoby'] = pd.to_numeric(zespol_df['ID_Osoby'])
+    nawyki_df['ID_Nawyku'] = pd.to_numeric(nawyki_df['ID_Nawyku'])
+    
+    st.session_state['zespol_df'] = zespol_df
+    st.session_state['nawyki_df'] = nawyki_df
+    st.session_state['wpisy_df'] = wpisy_df
+
+def save_data(data_frame, worksheet_name):
+    """Zapisuje cały DataFrame do określonego arkusza, nadpisując go."""
+    conn.write(worksheet=worksheet_name, data=data_frame)
+
+def append_data(data_frame, worksheet_name):
+    """Dopisuje nowe wiersze do określonego arkusza."""
+    conn.append(worksheet=worksheet_name, data=data_frame)
+
+def calculate_streak(series):
+    streak = 0
+    for val in reversed(series.tolist()):
+        if val == 'Tak': streak += 1
+        elif val == 'Nie': break
+    return streak
+
+# --- Style CSS (bez zmian) ---
+# ... (cały blok CSS pozostaje taki sam jak w poprzedniej wersji) ...
 KOLOR_TLA = '#FFFFFF'
 KOLOR_TEKSTU = '#052852'
 KOLOR_AKCENTU = '#00b6db'
@@ -46,32 +95,8 @@ css_content = f"""
 </style>
 """
 st.markdown(css_content, unsafe_allow_html=True)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ZESPOL_FILE = os.path.join(BASE_DIR, 'zespol.csv')
-NAWYKI_FILE = os.path.join(BASE_DIR, 'nawyki.csv')
-WPISY_FILE = os.path.join(BASE_DIR, 'wpisy.csv')
-def load_data():
-    if 'data_loaded' not in st.session_state:
-        try: zespol_df = pd.read_csv(ZESPOL_FILE)
-        except: zespol_df = pd.DataFrame({'ID_Osoby': [], 'Imie': []}).astype({'ID_Osoby': int})
-        try: nawyki_df = pd.read_csv(NAWYKI_FILE)
-        except: nawyki_df = pd.DataFrame({'ID_Nawyku': [], 'Opis': []}).astype({'ID_Nawyku': int})
-        try:
-            wpisy_df = pd.read_csv(WPISY_FILE)
-            if not wpisy_df.index.is_unique:
-                wpisy_df = wpisy_df.reset_index(drop=True)
-        except: wpisy_df = pd.DataFrame({'Data': [], 'ID_Osoby': [], 'ID_Nawyku': [], 'Odpowiedz': []})
-        st.session_state.update({'zespol_df': zespol_df, 'nawyki_df': nawyki_df, 'wpisy_df': wpisy_df, 'data_loaded': True})
-def save_data():
-    st.session_state['zespol_df'].to_csv(ZESPOL_FILE, index=False)
-    st.session_state['nawyki_df'].to_csv(NAWYKI_FILE, index=False)
-    st.session_state['wpisy_df'].to_csv(WPISY_FILE, index=False)
-def calculate_streak(series):
-    streak = 0
-    for val in reversed(series.tolist()):
-        if val == 'Tak': streak += 1
-        elif val == 'Nie': break
-    return streak
+
+# --- Główna Aplikacja ---
 load_data()
 
 st.title("✨ Nawyki Zespołowe")
@@ -86,12 +111,14 @@ with st.sidebar:
 
 if strona == "Nasze Postępy":
     st.header("Zobaczmy nasze postępy!")
-    if st.session_state['wpisy_df'].empty:
-        st.info("Brak danych do analizy.")
+    if st.session_state.wpisy_df.empty:
+        st.info("Brak danych do analizy. Dodaj pierwszy wpis w sekcji 'Jak nam poszło?'.")
     else:
-        dane = pd.merge(st.session_state['wpisy_df'], st.session_state['zespol_df'], on='ID_Osoby')
-        dane = pd.merge(dane, st.session_state['nawyki_df'], on='ID_Nawyku')
+        # Reszta kodu dashboardu jest prawie identyczna
+        dane = pd.merge(st.session_state.wpisy_df, st.session_state.zespol_df, on='ID_Osoby')
+        dane = pd.merge(dane, st.session_state.nawyki_df, on='ID_Nawyku')
         dane['Data'] = pd.to_datetime(dane['Data'])
+        # ... (cały kod dashboardu pozostaje bez zmian) ...
         with st.sidebar:
             st.header("Filtry")
             wszystkie_osoby = ['Wszyscy'] + sorted(dane['Imie'].unique().tolist())
@@ -149,101 +176,111 @@ if strona == "Nasze Postępy":
             fig3.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font_color=KOLOR_TEKSTU, font_family='Poppins', title_font_family='Unna', xaxis_title="Zaangażowanie (%)", yaxis_title="", yaxis_autorange="reversed")
             st.plotly_chart(fig3, use_container_width=True)
 
+
 elif strona == "Jak nam poszło?":
     st.header("Jak nam poszło na ostatnim spotkaniu?")
-    if st.session_state['zespol_df'].empty or st.session_state['nawyki_df'].empty:
-        st.warning("Aby rozpocząć, dodaj przynajmniej jednego członka zespołu i jeden nawyk w sekcji 'Ustawienia'.")
+    if st.session_state.zespol_df.empty or st.session_state.nawyki_df.empty:
+        st.warning("Najpierw dodaj członków zespołu i nawyki w sekcji 'Ustawienia'.")
     else:
-        imiona = st.session_state['zespol_df']['Imie'].tolist()
+        imiona = st.session_state.zespol_df['Imie'].tolist()
         wybrane_imie = st.selectbox("Wybierz, kim jesteś:", imiona)
-        id_osoby = st.session_state['zespol_df'][st.session_state['zespol_df']['Imie'] == wybrane_imie].iloc[0]['ID_Osoby']
+        id_osoby = st.session_state.zespol_df[st.session_state.zespol_df['Imie'] == wybrane_imie].iloc[0]['ID_Osoby']
+        
         with st.form(f"rejestracja_form_{id_osoby}"):
             wybrana_data = st.date_input("Wybierz datę:", datetime.now())
-            st.markdown(f"---")
+            st.markdown("---")
             st.subheader(f"Nawyki dla: {wybrane_imie}")
-            for idx, nawyk in st.session_state['nawyki_df'].iterrows():
+            
+            for idx, nawyk in st.session_state.nawyki_df.iterrows():
                 st.write(nawyk['Opis'])
                 klucz = f"nawyk_{id_osoby}_{nawyk['ID_Nawyku']}"
                 st.radio("Odpowiedź:", ["Tak", "Nie", "Nie było takiej sytuacji"], key=klucz, horizontal=True, label_visibility="collapsed")
+            
             submitted = st.form_submit_button("Gotowe! Zapisuję")
             if submitted:
                 nowe_wpisy = []
-                for idx, nawyk in st.session_state['nawyki_df'].iterrows():
+                for idx, nawyk in st.session_state.nawyki_df.iterrows():
                     klucz = f"nawyk_{id_osoby}_{nawyk['ID_Nawyku']}"
                     odpowiedz = st.session_state[klucz]
-                    nowy_wpis = {'Data': wybrana_data.strftime('%Y-%m-%d'), 'ID_Osoby': id_osoby, 'ID_Nawyku': nawyk['ID_Nawyku'], 'Odpowiedz': odpowiedz}
+                    nowy_wpis = {
+                        'Data': wybrana_data.strftime('%Y-%m-%d'), 
+                        'ID_Osoby': id_osoby, 
+                        'ID_Nawyku': nawyk['ID_Nawyku'], 
+                        'Odpowiedz': odpowiedz
+                    }
                     nowe_wpisy.append(nowy_wpis)
+                
                 nowe_wpisy_df = pd.DataFrame(nowe_wpisy)
-                st.session_state['wpisy_df'] = pd.concat([st.session_state['wpisy_df'], nowe_wpisy_df], ignore_index=True)
-                save_data()
+                append_data(nowe_wpisy_df, "Wpisy")
                 st.success(f"Pomyślnie zapisano wyniki dla: {wybrane_imie}!")
                 st.balloons()
+                st.rerun()
+
 elif strona == "Ustawienia":
     st.header("Ustawienia i zarządzanie aplikacją")
+    
     with st.expander("Rozwiń, aby zarządzać zespołem"):
-        # ... (kod zarządzania zespołem bez zmian) ...
         with st.form("dodaj_osobe_form", clear_on_submit=True):
             nowe_imie = st.text_input("Wpisz imię nowej osoby:")
             if st.form_submit_button("Dodaj osobę") and nowe_imie:
-                nowe_id = st.session_state['zespol_df']['ID_Osoby'].max() + 1 if not st.session_state['zespol_df'].empty else 1
-                nowy_czlonek = pd.DataFrame([{'ID_Osoby': int(nowe_id), 'Imie': nowe_imie}])
-                st.session_state['zespol_df'] = pd.concat([st.session_state['zespol_df'], nowy_czlonek], ignore_index=True)
-                save_data()
-                st.success(f"Dodano: {nowe_imie}!")
-                st.rerun()
+                if nowe_imie not in st.session_state.zespol_df['Imie'].tolist():
+                    nowe_id = st.session_state.zespol_df['ID_Osoby'].max() + 1 if not st.session_state.zespol_df.empty else 1
+                    nowy_czlonek = pd.DataFrame([{'ID_Osoby': int(nowe_id), 'Imie': nowe_imie}])
+                    updated_df = pd.concat([st.session_state.zespol_df, nowy_czlonek], ignore_index=True)
+                    save_data(updated_df, "Zespol")
+                    st.success(f"Dodano: {nowe_imie}!")
+                    st.rerun()
+                else:
+                    st.error("Osoba o tym imieniu już istnieje.")
         st.write("---")
         st.write("**Aktualny Zespół:**")
-        for index, row in st.session_state['zespol_df'].iterrows():
+        for index, row in st.session_state.zespol_df.iterrows():
             c1, c2 = st.columns([0.8, 0.2])
             c1.write(f"**{row['Imie']}**")
             if c2.button("Usuń", key=f"del_osoba_{row['ID_Osoby']}"):
-                st.session_state['zespol_df'] = st.session_state['zespol_df'][st.session_state['zespol_df']['ID_Osoby'] != row['ID_Osoby']]
-                save_data()
+                updated_df = st.session_state.zespol_df[st.session_state.zespol_df['ID_Osoby'] != row['ID_Osoby']]
+                save_data(updated_df, "Zespol")
                 st.rerun()
+
     with st.expander("Rozwiń, aby zarządzać nawykami"):
-        # ... (kod zarządzania nawykami bez zmian) ...
         with st.form("dodaj_nawyk_form", clear_on_submit=True):
             nowy_opis = st.text_area("Wpisz opis nowego nawyku:", height=100)
             if st.form_submit_button("Dodaj nawyk") and nowy_opis:
-                nowe_id = st.session_state['nawyki_df']['ID_Nawyku'].max() + 1 if not st.session_state['nawyki_df'].empty else 1
-                nowy_nawyk_df = pd.DataFrame([{'ID_Nawyku': int(nowe_id), 'Opis': nowy_opis}])
-                st.session_state['nawyki_df'] = pd.concat([st.session_state['nawyki_df'], nowy_nawyk_df], ignore_index=True)
-                save_data()
+                nowe_id = st.session_state.nawyki_df['ID_Nawyku'].max() + 1 if not st.session_state.nawyki_df.empty else 1
+                nowy_nawyk = pd.DataFrame([{'ID_Nawyku': int(nowe_id), 'Opis': nowy_opis}])
+                updated_df = pd.concat([st.session_state.nawyki_df, nowy_nawyk], ignore_index=True)
+                save_data(updated_df, "Nawyki")
                 st.success(f"Dodano nowy nawyk!")
                 st.rerun()
         st.write("---")
         st.write("**Aktualne Nawyki:**")
-        for index, row in st.session_state['nawyki_df'].iterrows():
+        for index, row in st.session_state.nawyki_df.iterrows():
             c1, c2 = st.columns([0.8, 0.2])
             c1.write(f"{row['Opis']}")
             if c2.button("Usuń", key=f"del_nawyk_{row['ID_Nawyku']}"):
-                st.session_state['nawyki_df'] = st.session_state['nawyki_df'][st.session_state['nawyki_df']['ID_Nawyku'] != row['ID_Nawyku']]
-                save_data()
+                updated_df = st.session_state.nawyki_df[st.session_state.nawyki_df['ID_Nawyku'] != row['ID_Nawyku']]
+                save_data(updated_df, "Nawyki")
                 st.rerun()
 
-    st.markdown("---")
     with st.expander("Rozwiń, aby zarządzać wpisami"):
-        if st.session_state['wpisy_df'].empty:
+        if st.session_state.wpisy_df.empty:
             st.info("Brak jakichkolwiek wpisów do wyświetlenia.")
         else:
+            # ... (logika usuwania wpisów pozostaje taka sama, ale teraz operuje na nowej funkcji save_data) ...
             st.warning("Uwaga: Usunięcie wpisu z danego dnia jest nieodwracalne.")
             col1, col2 = st.columns(2)
             with col1:
-                osoba_do_filtrowania = st.selectbox("Pokaż wpisy dla:", ["Wszystkich"] + st.session_state['zespol_df']['Imie'].tolist(), key="filtr_osob_usun")
+                osoba_do_filtrowania = st.selectbox("Pokaż wpisy dla:", ["Wszystkich"] + st.session_state.zespol_df['Imie'].tolist(), key="filtr_osob_usun")
             with col2:
                 data_do_filtrowania = st.date_input("Pokaż wpisy z dnia:", value=None, key="filtr_daty_usun")
             
-            dane_wpisow = pd.merge(st.session_state['wpisy_df'], st.session_state['zespol_df'], on='ID_Osoby')
-            
-            # ZMIENIONA LOGIKA: Grupujemy wpisy po osobie i dacie
+            dane_wpisow = pd.merge(st.session_state.wpisy_df, st.session_state.zespol_df, on='ID_Osoby')
             dane_wpisow['Data_str'] = pd.to_datetime(dane_wpisow['Data']).dt.strftime('%Y-%m-%d')
-            
             if osoba_do_filtrowania != "Wszystkich":
                 dane_wpisow = dane_wpisow[dane_wpisow['Imie'] == osoba_do_filtrowania]
             if data_do_filtrowania:
                 dane_wpisow = dane_wpisow[dane_wpisow['Data_str'] == data_do_filtrowania.strftime('%Y-%m-%d')]
-
-            # Grupujemy, aby pokazać jeden wiersz na zgłoszenie
+            
             wpisy_pogrupowane = dane_wpisow.groupby(['Data_str', 'Imie', 'ID_Osoby']).size().reset_index(name='LiczbaNawykow')
             st.write(f"Znaleziono {len(wpisy_pogrupowane)} wpisów (sesji).")
 
@@ -251,19 +288,14 @@ elif strona == "Ustawienia":
                 id_osoby = row['ID_Osoby']
                 data_wpisu = row['Data_str']
                 imie = row['Imie']
-                liczba_nawykow = row['LiczbaNawykow']
-
+                
                 c1, c2 = st.columns([0.8, 0.2])
-                c1.write(f"Wpis dla **{imie}** z dnia **{data_wpisu}** ({liczba_nawykow} nawyków)")
+                c1.write(f"Wpis dla **{imie}** z dnia **{data_wpisu}**")
                 
                 if c2.button("Usuń cały wpis", key=f"del_submission_{id_osoby}_{data_wpisu}"):
-                    # Znajdujemy indeksy wszystkich wierszy do usunięcia
-                    indeksy_do_usuniecia = st.session_state['wpisy_df'][
-                        (st.session_state['wpisy_df']['ID_Osoby'] == id_osoby) &
-                        (st.session_state['wpisy_df']['Data'] == data_wpisu)
-                    ].index
-                    
-                    st.session_state['wpisy_df'].drop(indeksy_do_usuniecia, inplace=True)
-                    save_data()
+                    wpisy_po_usunieciu = st.session_state.wpisy_df[
+                        ~((st.session_state.wpisy_df['ID_Osoby'] == id_osoby) & (st.session_state.wpisy_df['Data'] == data_wpisu))
+                    ]
+                    save_data(wpisy_po_usunieciu, "Wpisy")
                     st.success(f"Usunięto wpis dla {imie} z dnia {data_wpisu}.")
                     st.rerun()
